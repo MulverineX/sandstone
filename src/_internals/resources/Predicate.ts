@@ -1,40 +1,26 @@
-import type { AdvancementType, MultiplePlayersArgument, PredicateType } from '@arguments'
-import type { CommandsRoot } from '@commands'
-import { toMcFunctionName as pathToResourceName } from '@datapack/minecraft'
-import { ConditionClass } from '@variables'
+import { ResourceClass } from './Resource'
 
-export class Predicate extends ConditionClass {
-  private commandsRoot
+import type { PredicateType } from '@arguments'
+import type { Datapack } from '@datapack'
+import type { ConditionClass } from '@variables'
 
-  private path
+export class PredicateClass extends ResourceClass implements ConditionClass {
+  predicateJson
 
-  private predicateJson
+  constructor(datapack: Datapack, name: string, predicate: PredicateType) {
+    super(datapack, name)
 
-  constructor(commandsRoot: CommandsRoot, name: string, predicate: PredicateType) {
-    super()
-
-    this.commandsRoot = commandsRoot
     this.predicateJson = predicate
 
-    const path = this.commandsRoot.Datapack.getResourcePath(name)
-
-    this.path = path
-
-    this.commandsRoot.Datapack.addResource(name, 'predicates', {
-      predicate,
-      children: new Map(),
-      isResource: true,
-      path: path.fullPathWithNamespace,
-    })
+    this.commandsRoot.Datapack.addResource(name, 'predicates', { predicate })
   }
 
-  get name(): string {
-    return pathToResourceName(this.path.fullPathWithNamespace)
-  }
-
+  /**
+   * @internal
+   */
   _toMinecraftCondition(): {value: any[]} {
     return {
-      value: ['predicate', this.name],
+      value: ['if', 'predicate', this.name],
     }
   }
 }

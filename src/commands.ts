@@ -1,7 +1,3 @@
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-require('module-alias')(__dirname)
-
-// eslint-disable-next-line import/first
 import { commandsRoot } from './_internals'
 
 export const {
@@ -21,6 +17,7 @@ export const {
   execute,
   experience,
   fill,
+  functionCmd,
   forceload,
   gamemode,
   gamerule,
@@ -35,6 +32,7 @@ export const {
   msg,
   particle,
   playsound,
+  raw,
   recipe,
   reload,
   replaceitem,
@@ -55,6 +53,7 @@ export const {
   teammessage,
   teleport,
   tellraw,
+  time,
   title,
   trigger,
   w,

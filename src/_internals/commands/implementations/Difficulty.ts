@@ -1,6 +1,7 @@
-import { DIFFICULTIES } from '@arguments'
 import { Command } from '@commands/Command'
 import { command } from '@commands/decorators'
+
+import type { DIFFICULTIES } from '@arguments'
 
 export class Difficulty extends Command {
   /**

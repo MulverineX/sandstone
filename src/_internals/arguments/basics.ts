@@ -1,3 +1,4 @@
+import type { LiteralUnion } from '@/generalTypes'
 import type { MultipleEntitiesArgument } from '@arguments'
 
 export type AXES = 'x' | 'xy' | 'yz' | 'xz' | 'xyz'
@@ -13,7 +14,7 @@ export type GAMEMODES = 'survival' | 'creative' | 'adventure' | 'spectator'
 
 export type DIFFICULTIES = 'easy' | 'normal' | 'hard' | 'peaceful'
 
-export type OPERATORS = '=' | '+=' | '-=' | '/=' | '*=' | '%=' | '<=' | '>=' | '<>'
+export type OPERATORS = '=' | '+=' | '-=' | '/=' | '*=' | '%=' | '<' | '>' | '><'
 
 export type COMPARISON_OPERATORS = '<' | '<=' | '=' | '>=' | '>'
 
@@ -25,3 +26,22 @@ export class _ShowAlias {
 }
 
 export type MessageOrSelector = (string | MultipleEntitiesArgument | number) | _ShowAlias
+
+export type TimeArgument = number | LiteralUnion<'1t' | '1s' | '1d'>
+
+export type TAG_TYPES = 'blocks' | 'entity_types' | 'fluids' | 'functions' | 'items'
+
+export type MAP_ICONS = (
+  'player' | 'frame' | 'red_marker' |
+  'blue_marker' | 'target_x' | 'target_point' |
+  'player_off_map' | 'player_off_limits' | 'mansion' |
+  'monument' | 'banner_white' | 'minecraft:orange' |
+  'minecraft:magenta' | 'minecraft:light_blue' |
+  'minecraft:yellow' | 'minecraft:lime' |
+  'minecraft:pink' | 'minecraft:gray' |
+  'minecraft:light_gray' | 'minecraft:cyan' |
+  'minecraft:purple' | 'minecraft:blue' |
+  'minecraft:brown' | 'minecraft:green' |
+  'minecraft:red' | 'minecraft:black' |
+  'red_x'
+)

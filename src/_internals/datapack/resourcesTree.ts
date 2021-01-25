@@ -1,4 +1,8 @@
-import type { AdvancementType, PredicateType } from '@arguments'
+/* eslint-disable camelcase */
+import type {
+  AdvancementType, LootTableType, PredicateType, RecipeType,
+  TAG_TYPES,
+} from '@arguments'
 import type { CommandArgs } from './minecraft'
 
 export type ResourcePath = readonly [namespace: string, ...path: string[]]
@@ -26,10 +30,11 @@ export type File<T extends Record<string, unknown>, P extends ResourcePath = Res
 type FunctionProperties = { commands: CommandArgs[] }
 export type FunctionResource = FolderOrFile<FunctionProperties>
 
-type TagProperties = { values: (string | { id: string, required: boolean })[], replace?: boolean }
+export type TagSingleValue<T> = T | { id: T, required: boolean }
+type TagProperties = { values: TagSingleValue<string>[], replace?: boolean }
 type TagPath = readonly [
   namespace: string,
-  type: 'blocks' | 'entity_types' | 'fluids' | 'functions' | 'items',
+  type: TAG_TYPES,
   ...path: string[]
 ]
 export type TagsResource = FolderOrFile<TagProperties, TagPath>
@@ -41,6 +46,12 @@ export type AdvancementResource = FolderOrFile<AdvancementProperties>
 type PredicateProperties = { predicate: PredicateType }
 export type PredicateResource = FolderOrFile<PredicateProperties>
 
+type LootTableProperties = { lootTable: LootTableType }
+export type LootTableResource = FolderOrFile<LootTableProperties>
+
+type RecipeProperties = { recipe: RecipeType<string, string, string> }
+export type RecipeResource = FolderOrFile<RecipeProperties>
+
 /**
  * Given a resource names, returns the type of resource
  */
@@ -49,6 +60,8 @@ export type ResourceTypeMap = {
   tags: TagsResource
   advancements: AdvancementResource
   predicates: PredicateResource
+  loot_tables: LootTableResource
+  recipes: RecipeResource
 }
 
 export type ResourceOnlyTypeMap = {
@@ -56,6 +69,8 @@ export type ResourceOnlyTypeMap = {
   tags: File<TagProperties, TagPath>
   advancements: File<AdvancementProperties>
   predicates: File<PredicateProperties>
+  loot_tables: File<LootTableProperties>
+  recipes: File<RecipeProperties>
 }
 
 /**
@@ -88,6 +103,8 @@ export class ResourcesTree {
       tags: new Map(),
       advancements: new Map(),
       predicates: new Map(),
+      loot_tables: new Map(),
+      recipes: new Map(),
     }
 
     this.namespaces.set(name, namespaceResource)

@@ -1,30 +1,133 @@
-import { LiteralUnion } from '@/generalTypes'
-import type {
-  AdvancementType, JsonTextComponent, OBJECTIVE_CRITERION, PredicateType,
-} from '@arguments'
+import chalk from 'chalk'
 import { CommandsRoot } from '@commands'
 import { Flow } from '@flow'
-import { Advancement } from '@resources'
-import { McFunction, McFunctionOptions } from '@resources/McFunction'
-import { Predicate } from '@resources/Predicate'
-import { Objective, ObjectiveClass, SelectorCreator } from '@variables'
-import { CommandArgs, toMcFunctionName } from './minecraft'
-import {
-  FunctionResource, ResourceOnlyTypeMap, ResourcePath, ResourcesTree, ResourceTypes,
+import { Objective, SelectorCreator } from '@variables'
+
+import { BasePathClass } from './BasePath'
+import { toMCFunctionName } from './minecraft'
+import { ResourcesTree } from './resourcesTree'
+import { saveDatapack } from './saveDatapack'
+
+import type { LiteralUnion } from '@/generalTypes'
+import type { JsonTextComponent, OBJECTIVE_CRITERION, TimeArgument } from '@arguments'
+import type { MCFunctionClass } from '@resources'
+import type { ObjectiveClass } from '@variables'
+import type { BasePathOptions } from './BasePath'
+import type { CommandArgs } from './minecraft'
+import type {
+  FunctionResource, ResourceOnlyTypeMap, ResourcePath, ResourceTypes,
 } from './resourcesTree'
-import { saveDatapack, SaveOptions } from './saveDatapack'
+import type { SaveOptions } from './saveDatapack'
 
-export interface McFunctionReturn<T extends unknown[]> {
-  (...args: T): void
+type ScriptArguments = {
+  /** The name of the data pack. */
+  dataPackName: string,
+  /** The destination folder of the data pack. */
+  destination: string,
+}
 
-  schedule: (delay: number | LiteralUnion<'1t' | '1s' | '1d'>, type?: 'append' | 'replace', ...callbackArgs: T) => void
+export interface SandstoneConfig {
+  /**
+   * The default namespace for the data pack.
+   * It can be changed for each resources, individually or using Base Paths.
+   */
+  namespace: string
 
-  getNameFromArgs: (...args: T) => string
+  /**
+   * The name of the datapack.
+   */
+  name: string
 
-  clearSchedule: (...args: T) => void
+  /**
+   * The description of the datapack.
+   * Can be a single string or a JSON Text Component
+   * (like in /tellraw or /title).
+   */
+  description: JsonTextComponent
+
+  /**
+   * The format version of the data pack.
+   * Can change depending on the versions of Minecraft.
+   *
+   * @see [https://minecraft.gamepedia.com/Data_Pack#pack.mcmeta](https://minecraft.gamepedia.com/Data_Pack#pack.mcmeta)
+   */
+  formatVersion: number
+
+  /**
+   * A custom path to your .minecraft folder,
+   * in case you changed the default and Sandstone fails to find it.
+   */
+  minecraftPath?: string
+
+  /**
+   * A unique identifier that is used to distinguish your variables from other Sandstone data pack variables.
+   *
+   * It must be a string of valid scoreboard characters.
+   */
+  packUid: string
+
+  /** All the options to save the data pack. */
+  saveOptions: {
+    /**
+     * A custom handler for saving files. If specified, files won't be saved anymore, you will have to handle that yourself.
+     */
+    customFileHandler?: SaveOptions['customFileHandler']
+
+    /** The indentation to use for all JSON & MCMeta files. This argument is the same than `JSON.stringify` 3d argument. */
+    indentation?: string | number
+  } & ({
+    /**
+     * The world to save the data pack in.
+     *
+     * Incompatible with `root` and `path`.
+     */
+    world: string
+  } | {
+    /**
+     * Whether to save the data pack in the `.minecraft/datapacks` folder.
+     *
+     * Incompatible with `world` and `path`.
+     */
+    root: true
+  } | {
+    /**
+     * A custom path to save the data pack at.
+     *
+     * Incompatible with `root` and `world`.
+     */
+    path: string
+  })
+
+  /** Some scripts that can run at defined moments. */
+  scripts?: {
+    /** A script running before Sandstone starts importing source files. */
+    beforeAll?: (options: ScriptArguments) => (void | Promise<void>)
+
+    /** A script running before Sandstone starts saving the files. */
+    beforeSave?: (options: ScriptArguments) => (void | Promise<void>)
+
+    /** A script running after Sandstone saved all files. */
+    afterAll?: (options: ScriptArguments) => (void | Promise<void>)
+  }
+}
+
+export interface MCFunctionInstance<RETURN extends (void | Promise<void>) = (void | Promise<void>)> {
+  (): RETURN
+
+  schedule: (delay: TimeArgument, type?: 'append' | 'replace') => void
+
+  clearSchedule: () => void
+
+  generate: () => void
+
+  toString: () => string
+
+  toJSON: () => string
 }
 
 export default class Datapack {
+  basePath: BasePathClass<undefined, undefined>
+
   defaultNamespace: string
 
   currentFunction: FunctionResource | null
@@ -37,13 +140,19 @@ export default class Datapack {
 
   constants: Set<number>
 
-  rootFunctions: Set<McFunction<any[]>>
+  rootFunctions: Set<MCFunctionClass>
 
   static anonymousScoreId = 0
 
   flow: Flow
 
-  constructor(namespace: string) {
+  initCommands: CommandArgs[]
+
+  packUid: string
+
+  constructor(packUid: string, namespace: string) {
+    this.packUid = packUid
+    this.basePath = new BasePathClass(this, {})
     this.defaultNamespace = namespace
     this.currentFunction = null
     this.resources = new ResourcesTree()
@@ -52,21 +161,61 @@ export default class Datapack {
     this.rootFunctions = new Set()
 
     this.commandsRoot = new CommandsRoot(this)
-    this.flow = new Flow(this.commandsRoot)
+    this.flow = new Flow(this)
+
+    this.initCommands = []
   }
 
-  getResourcePath(functionName: string): {
+  /** Get information like the path, namespace etc... from a resource name */
+  getResourcePath(resourceName: string): {
+    /** The namespace of the resource */
     namespace: string
+
+    /**
+     * The path of the resource, EXCLUDING the resource name and the namespace.
+     *
+     * @example
+     * getResourcePath('minecraft:test/myfunction').path === ['test']
+     */
     path: string[]
-    name: string
+
+    /**
+     * The path of the resource, EXCLUDING the namespace.
+     *
+     * @example
+     * getResourcePath('minecraft:test/myfunction').fullPath === ['test', 'myfunction']
+     */
     fullPath: string[]
+
+    /**
+     * The path of the resource, INCLUDING the resource name and the namespace.
+     *
+     * @example
+     * getResourcePath('minecraft:test/myfunction').fullPathWithNamespace === ['minecraft', 'test', 'myfunction']
+     */
     fullPathWithNamespace: ResourcePath
+
+    /**
+     * The name of the resource itself. Does not include the path nor the namespace.
+     *
+     * @example
+     * getResourcePath('minecraft:test/myfunction').name === 'myfunction'
+     */
+    name: string
+
+    /**
+     * The full name of the resource itself, as it should be refered in the datapack.
+     *
+     * @example
+     * getResourcePath('minecraft:test/myfunction').name === 'minecraft:test/myfunction'
+     */
+    fullName: string
   } {
     let namespace = this.defaultNamespace
-    let fullName = functionName
+    let fullName = resourceName
 
-    if (functionName.includes(':')) {
-      ([namespace, fullName] = functionName.split(':'))
+    if (resourceName.includes(':')) {
+      ([namespace, fullName] = resourceName.split(':'))
     }
 
     const fullPath = fullName.split('/')
@@ -75,7 +224,7 @@ export default class Datapack {
     const path = fullPath.slice(0, -1)
 
     return {
-      namespace, path, fullPath, name, fullPathWithNamespace: [namespace, ...fullPath],
+      namespace, path, fullPath, name, fullPathWithNamespace: [namespace, ...fullPath], fullName: `${namespace}:${fullName}`,
     }
   }
 
@@ -115,39 +264,43 @@ export default class Datapack {
   }
 
   /**
-   * Get a unique name for a child function of the current function, from an original name.
+   * Get a unique name for a child function of a parent function, from an original name.
    * @param childName The original name for the child function.
+   * @param parentFunction The parent function to find a child's name for. Defaults to current function.
    */
-  private getUniqueChildName(childName: string): string {
-    if (!this.currentFunction) {
+  getUniqueChildName(childName: string, parentFunction = this.currentFunction) {
+    if (!parentFunction) {
       throw new Error('Trying to get a unique child name outside a root function.')
     }
 
-    return this.getUniqueNameFromFolder(childName, this.currentFunction)
+    const newName = this.getUniqueNameFromFolder(childName, parentFunction)
+    const fullName = toMCFunctionName([...parentFunction.path, newName])
+    return this.getResourcePath(fullName)
   }
 
   /**
    * Creates a new child function of the current function.
    * @param functionName The name of the child function.
+   * @param parentFunction The function for which a child must be created. Defaults to the current function.
    */
-  createChildFunction(functionName: string): { childFunction: FunctionResource, functionName: string } {
-    if (!this.currentFunction) {
+  createChildFunction(functionName: string, parentFunction = this.currentFunction): { childFunction: FunctionResource, functionName: string } {
+    if (!parentFunction) {
       throw Error('Entering child function without registering a root function')
     }
 
-    const childName = this.getUniqueChildName(functionName)
+    const { name: childName, fullName, fullPathWithNamespace } = this.getUniqueChildName(functionName, parentFunction)
 
     // Update the current function - it now is the child function.
     const emptyFunction = {
-      children: new Map(), isResource: true as const, commands: [], path: [...this.currentFunction.path, childName],
+      children: new Map(), isResource: true as const, commands: [], path: fullPathWithNamespace,
     }
 
-    this.currentFunction.children.set(childName, emptyFunction as any)
+    parentFunction.children.set(childName, emptyFunction as any)
 
     // Return its full minecraft name
     return {
-      functionName: toMcFunctionName(emptyFunction.path),
-      childFunction: emptyFunction as any,
+      functionName: fullName,
+      childFunction: emptyFunction,
     }
   }
 
@@ -178,16 +331,23 @@ export default class Datapack {
   }
 
   /**
-   * Exit the current child function, and enter the parent function.
+   * Get the parent function of the current function.
    */
-  exitChildFunction(): void {
+  getParentFunction() {
     if (!this.currentFunction) {
       throw Error('Exiting a not-existing function')
     }
 
     const parentPath = this.currentFunction.path.slice(0, -1)
 
-    this.currentFunction = this.resources.getResource(parentPath as unknown as ResourcePath, 'functions')
+    return this.resources.getResource(parentPath as unknown as ResourcePath, 'functions')
+  }
+
+  /**
+   * Exit the current child function, and enter the parent function.
+   */
+  exitChildFunction(): void {
+    this.currentFunction = this.getParentFunction()
   }
 
   registerNewObjective = (objective: ObjectiveClass) => {
@@ -203,7 +363,7 @@ export default class Datapack {
    */
   registerNewCommand = (commandArgs: CommandArgs): void => {
     if (!this.currentFunction || !this.currentFunction.isResource) {
-      throw Error('Adding a command outside of a registered function')
+      throw Error(`Adding a command outside of a registered function: /${commandArgs.join(' ')}`)
     }
 
     this.currentFunction.commands.push(commandArgs)
@@ -217,43 +377,36 @@ export default class Datapack {
   }
 
   /**
-   * Add a function that must be run each tick
+   * Add a function to a given function tag
    */
-  addTickFunction(mcfunction: string) {
+  addFunctionToTag(mcfunction: string, tag: string, index?: number | undefined) {
+    const { namespace, fullPath, name } = this.getResourcePath(tag)
+
     const tickResource = this.resources.getOrAddResource('tags', {
       children: new Map(),
       isResource: true,
-      path: ['minecraft', 'functions', 'tick'],
+      path: [namespace, 'functions', ...fullPath],
       values: [],
       replace: false,
     })
 
-    tickResource.values.push(mcfunction)
-  }
-
-  /**
-   * Add a function that must be run on each datapack load
-   */
-  addLoadFunction(mcfunction: string) {
-    const tickResource = this.resources.getOrAddResource('tags', {
-      children: new Map(),
-      isResource: true,
-      path: ['minecraft', 'functions', 'load'],
-      values: [],
-      replace: false,
-    })
-
-    tickResource.values.push(mcfunction)
+    const { fullName } = this.getResourcePath(mcfunction)
+    if (index === undefined) {
+      tickResource.values.push(fullName)
+    } else {
+      // Insert at given index
+      tickResource.values.splice(index, 0, fullName)
+    }
   }
 
   /** UTILS */
-  /** Create a new objective */
-  createObjective = (name: string, criteria: LiteralUnion<OBJECTIVE_CRITERION>, display?: JsonTextComponent) => {
+  /** Create a new objective. Defaults to `dummy` if unspecified. */
+  createObjective = (name: string, criteria: LiteralUnion<OBJECTIVE_CRITERION> = 'dummy', display?: JsonTextComponent) => {
     if (name.length > 16) {
       throw new Error(`Objectives cannot have names with more than 16 characters. Got ${name.length} with objective "${name}".`)
     }
 
-    const objective = Objective(this.commandsRoot, name, criteria, display)
+    const objective = Objective(this.commandsRoot, name, criteria as string, display)
     this.registerNewObjective(objective)
     return objective
   }
@@ -267,54 +420,85 @@ export default class Datapack {
     }
   }
 
-  /**
-   * Creates an anonymous, unique score
-   */
-  createAnonymousScore() {
-    const sandstoneAnonymousName = 'sand_anonymous'
-    const score = this.getCreateObjective(sandstoneAnonymousName, 'dummy', 'Sandstone Anonymous Scores')
+  get rootObjective() {
+    return this.getCreateObjective('sandstone', 'dummy', [{ text: 'Sandstone', color: 'gold' }, ' internals'])
+  }
 
+  /**
+   * Creates a dynamic numeric variable, represented by an anonymous & unique score.
+   *
+   * @param initialValue The initial value of the variable. If left unspecified,
+   * or if `undefined`, then the score will not be initialized.
+   *
+   * @param name A name that can be useful for debugging.
+   */
+  Variable = (initialValue?: number | undefined, name?: string) => {
+    // Get the objective
+    const datapack = this.commandsRoot.Datapack
+    const score = datapack.rootObjective
+
+    // Get the specific anonymous score
     const id = Datapack.anonymousScoreId
     Datapack.anonymousScoreId += 1
+    const anonymousScore = score.ScoreHolder(`${name ?? 'anon'}_${datapack.packUid}_${id}`)
 
-    return score.ScoreHolder(`anonymous_${id}`)
+    if (initialValue !== undefined) {
+      if (this.currentFunction !== null) {
+        anonymousScore.set(initialValue)
+      } else {
+        this.initCommands.push(['scoreboard', 'players', 'set', anonymousScore.target, anonymousScore.objective, initialValue])
+      }
+    }
+
+    return anonymousScore
   }
 
   Selector = SelectorCreator.bind(this)
 
-  addResource = <T extends ResourceTypes>(name: string, type: T, resource: ResourceOnlyTypeMap[T]) => {
+  /** A BasePath changes the base namespace & directory of nested resources. */
+  BasePath = <N extends string | undefined, D extends string | undefined>(basePath: BasePathOptions<N, D>) => new BasePathClass(this, basePath)
+
+  addResource = <T extends ResourceTypes>(name: string, type: T, resource: Omit<ResourceOnlyTypeMap[T], 'children' | 'isResource' | 'path'>) => {
     this.resources.addResource(type, {
       ...resource,
       children: new Map(),
       isResource: true,
       path: this.getResourcePath(name).fullPathWithNamespace,
+    } as ResourceOnlyTypeMap[T])
+  }
+
+  sleep = (delay: TimeArgument): PromiseLike<void> => {
+    const SLEEP_CHILD_NAME = '__sleep'
+
+    if (!this.currentFunction) {
+      throw new Error('Cannot call `sleep` outside of a MCFunction.')
+    }
+
+    // If we're already in a "sleep" child, go to the parent function. It avoids childs' names becoming namespace:function/__sleep/__sleep/__sleep etc...
+    const { fullPath } = this.getResourcePath(toMCFunctionName(this.currentFunction.path))
+    const inSleepFunction = fullPath[fullPath.length - 1] === SLEEP_CHILD_NAME
+
+    let parentFunction: FunctionResource
+
+    // If we're in a sleep function, the parent function of the new child is the current function's parent. Else, the parent is the current function.
+    if (inSleepFunction) {
+      parentFunction = this.getParentFunction()
+    } else {
+      parentFunction = this.currentFunction
+    }
+
+    const newFunction = this.createChildFunction(SLEEP_CHILD_NAME, parentFunction)
+    this.commandsRoot.schedule.function(newFunction.functionName, delay, 'append')
+
+    return ({
+      then: (async (onfullfilled?: () => (void | Promise<void>)) => {
+        // Enter child "sleep"
+        this.currentFunction = newFunction.childFunction
+        const result = await onfullfilled?.()
+        return result
+      }) as any,
     })
   }
-
-  /**
-   * Creates a Minecraft Function.
-   *
-   * @param name The name of the function.
-   * @param callback A callback containing the commands you want in the Minecraft Function.
-   */
-  mcfunction = <T extends any[]>(
-    name: string, callback: (...args: T) => void, options?: McFunctionOptions,
-  ): McFunctionReturn<T> => {
-    const mcfunction = new McFunction(this, name, callback, options ?? {})
-
-    this.rootFunctions.add(mcfunction as McFunction<any[]>)
-
-    const returnFunction: any = mcfunction.call
-    returnFunction.schedule = mcfunction.schedule
-    returnFunction.getNameFromArgs = mcfunction.getNameFromArgs
-    returnFunction.clearSchedule = mcfunction.clearSchedule
-
-    return returnFunction
-  }
-
-  Advancement = <T extends string>(name: string, advancement: AdvancementType<T>) => new Advancement(this.commandsRoot, name, advancement)
-
-  Predicate = (name: string, predicate: PredicateType) => new Predicate(this.commandsRoot, name, predicate)
 
   /**
    * Saves the datapack to the file system.
@@ -322,10 +506,13 @@ export default class Datapack {
    * @param name The name of the Datapack
    * @param options The save options
    */
-  save = (name: string, options: SaveOptions = {}): void => {
+  save = async (name: string, options: SaveOptions) => {
+    console.log(chalk`⌛ {gray Starting compilation...}`)
+
     // First, generate all functions
     for (const mcfunction of this.rootFunctions) {
-      mcfunction.generateInitialFunction()
+      // eslint-disable-next-line no-await-in-loop
+      await mcfunction.generate()
     }
 
     // Then, generate the init function.
@@ -347,17 +534,22 @@ export default class Datapack {
       })
     }
 
+    // Then, add init commands
+    for (const commandArgs of this.initCommands) {
+      this.registerNewCommand(commandArgs)
+    }
+
     // Delete __init__ function if it's empty
     if (this.currentFunction?.isResource && this.currentFunction.commands.length === 0) {
       this.resources.deleteResource(this.currentFunction.path, 'functions')
     } else {
       // Else, put the __init__ function in the minecraft:load tag
-      this.addLoadFunction(toMcFunctionName(this.currentFunction!.path))
+      this.addFunctionToTag(toMCFunctionName(this.currentFunction!.path), 'minecraft:load', 0)
     }
 
     this.exitRootFunction()
 
-    saveDatapack(
+    return saveDatapack(
       this.resources,
       name,
       options,

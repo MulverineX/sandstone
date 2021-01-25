@@ -1,11 +1,13 @@
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-require('module-alias')(__dirname)
+import { dataPack } from './_internals'
 
-// eslint-disable-next-line import/first
-import { datapack } from './_internals'
+export { SandstoneConfig } from './_internals/datapack/Datapack'
 
 export const {
-  mcfunction, save: saveDatapack, Advancement, Predicate,
-} = datapack
+  save: savePack, BasePath, sleep,
+} = dataPack
+
+export const {
+  MCFunction, Advancement, Predicate, Tag, LootTable, Recipe,
+} = dataPack.basePath
 
 export { _ } from './_internals'

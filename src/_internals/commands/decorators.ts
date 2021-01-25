@@ -4,10 +4,11 @@ type InnerFunctionType = (...args: unknown[]) => void
 type DecoratorFunction<T> = (commandsRoot: T, innerFunction: InnerFunctionType, ...innerArgs: unknown[]) => unknown
 
 function getDefaultArguments(func: (...args: unknown[]) => unknown): unknown[] {
-  const args = func.toString().replace(/[^(]*\(([^)]*)\).*/, '$1')
+  const args = func.toString().match(/[^(]*\(([^)]*)\).*/)?.[1] ?? ''
   const argsArray = args.split(',').map((str) => str.trim().split('='))
 
-  const parsedArgsArray = argsArray.map(([_, defaultVal]) => (defaultVal === undefined ? null : eval(defaultVal)))
+  // eslint-disable-next-line no-eval
+  const parsedArgsArray = argsArray.map(([_, defaultVal]) => (defaultVal === undefined ? undefined : eval(defaultVal)))
 
   return parsedArgsArray
 }
@@ -140,29 +141,29 @@ export function command(name: string | string[], config: RegisterConfig = {}): R
   const names = Array.isArray(name) ? name : [name]
 
   return createPropertyDecorator<CommandsRoot>(config.thisField ?? null, (commandsRoot, innerFunction, ...innerArgs) => {
-    // If the previous command was executable, register it.
-    // It means it wasn't registered because it could have been extended with other arguments.
-    if (config.isExecuteSubcommand && !commandsRoot.inExecute) {
+    /*
+     * If the previous command was executable, register it.
+     * It means it wasn't registered because it could have been extended with other arguments.
+     */
+    if (config.isExecuteSubcommand && commandsRoot.executeState === 'outside') {
       commandsRoot.register(true)
     }
 
     if (config.isRoot) {
-      if (commandsRoot.inExecute) {
+      if (commandsRoot.executeState === 'after') {
         commandsRoot.arguments.push('run')
-        commandsRoot.inExecute = false
+        commandsRoot.executeState = 'outside'
       } else {
         commandsRoot.register(true)
       }
+    } else if (commandsRoot.executeState === 'outside' && config.isExecuteSubcommand) {
+      commandsRoot.arguments.push('execute')
     } else if (commandsRoot.arguments.length === 0) {
-      if (config.isExecuteSubcommand) {
-        commandsRoot.arguments.push('execute')
-      } else {
       // Function is not root but has no previous command
-        throw new Error(
-          'Trying to call some command arguments with no registered root. Did you forgot {hasSubcommands:true}?'
-        + `Args are: ${innerArgs}, function is ${innerFunction}`,
-        )
-      }
+      throw new Error(
+        'Trying to call some command arguments with no registered root. Did you forgot {hasSubcommands:true}?'
+      + `Args are: ${innerArgs}, function is ${innerFunction}`,
+      )
     }
 
     if (config.registerArguments) {
@@ -189,7 +190,7 @@ export function command(name: string | string[], config: RegisterConfig = {}): R
     }
 
     if (config.isExecuteSubcommand) {
-      commandsRoot.inExecute = true
+      commandsRoot.executeState = 'inside'
     }
 
     return result

@@ -1,3 +1,18 @@
+import { nbtParser } from '@variables'
+import { JsonTextComponentClass } from '@variables/JsonTextComponentClass'
+
+import { coordinatesParser, rotationParser } from '../variables/parsers'
+import { command } from './decorators'
+import {
+  AdvancementCommand, Attribute, Bossbar, Clone, Data, DatapackCommand, Debug,
+  DefaultGamemode, Difficulty, Effect, Enchant,
+  ExecuteWithRun,
+  Experience,
+  Fill,
+  Forceload,
+  FunctionCommand, GameruleCommand, Loot, Particle, RecipeCommand, ReplaceItem, Schedule, Scoreboard, SpreadPlayers, TagCommand, Team, Teleport, Time, Title, Trigger, Weather, WorldBorder,
+} from './implementations'
+
 import type { AtLeastOne, LiteralUnion } from '@/generalTypes'
 import type {
   BIOMES,
@@ -19,41 +34,35 @@ import type {
   SOUND_SOURCES,
   STRUCTURES,
 } from '@arguments'
-import { nbtParser } from '@variables'
-import Datapack from '@datapack/Datapack'
+import type Datapack from '@datapack/Datapack'
 import type { CommandArgs } from '@datapack/minecraft'
-import { JsonTextComponentClass } from '@variables/JsonTextComponentClass'
-import util from 'util'
-import { coordinatesParser, rotationParser } from '..'
 import type * as commands from '../../commands'
-import { command } from './decorators'
-import {
-  AdvancementCommand, Attribute, Bossbar, Clone, Data, DatapackCommand, Debug,
-  DefaultGamemode, Difficulty, Effect, Enchant,
-  ExecuteWithRun,
-  Experience,
-  Fill,
-  Forceload,
-  FunctionCommand, Loot, Particle, Recipe, ReplaceItem, Schedule, Scoreboard, SpreadPlayers, TagCommand, Team, Teleport, Time, Title, Trigger, Weather, WorldBorder,
-} from './implementations'
 
 export class CommandsRoot {
   Datapack: Datapack
 
-  inExecute: boolean
+  /**
+   * The state of the current execute command.
+   * outside: we aren't in an execute command
+   * inside : we are in an execute subcommand
+   * after  : we are after the `run` part of an execute command
+   */
+  executeState: 'outside' | 'inside' | 'after'
 
   executable: boolean
 
   arguments: CommandArgs
 
-  // This might seem weird, but we need this object to reference itself.
-  // Thanks to that, CommandsRoot implements the Command interface,
-  // and we can directly create commands here.
+  /*
+   * This might seem weird, but we need this object to reference itself.
+   * Thanks to that, CommandsRoot implements the Command interface,
+   * and we can directly create commands here.
+   */
   commandsRoot: CommandsRoot
 
   constructor(datapack: Datapack) {
     this.arguments = []
-    this.inExecute = false
+    this.executeState = 'outside'
     this.executable = false
     this.Datapack = datapack
     this.commandsRoot = this
@@ -67,7 +76,8 @@ export class CommandsRoot {
    */
   register = (soft = false) => {
     if (this.executable) {
-      this.Datapack.registerNewCommand(this.arguments as CommandArgs)
+      // We remove undefined arguments!
+      this.Datapack.registerNewCommand(this.arguments.filter((arg) => arg !== undefined) as CommandArgs)
       this.reset()
       return
     }
@@ -94,7 +104,7 @@ export class CommandsRoot {
 
   reset() {
     this.arguments = []
-    this.inExecute = false
+    this.executeState = 'outside'
     this.executable = false
   }
 
@@ -105,10 +115,23 @@ export class CommandsRoot {
   // attribute command //
   attribute = (new Attribute(this)).attribute
 
-  // bossabar command //
+  // bossbar command //
   bossbar = new Bossbar(this)
 
-  // clear command //
+  /**
+   * Clears items from player inventory, including items being dragged by the player.
+   *
+   * @param targets Specifies the player(s) whose items are cleared.
+   * If not specified, defaults to the player who executes the command.
+   *
+   * @param item Specifies the item to be cleared. If not specified, all items are cleared.
+   *
+   * @param maxCount Specifies the maximum number of items to be cleared.
+   *
+   * If not specified, all items that match `item` are cleared.
+   *
+   * If `0`, instead of clearing of items, detectes and queries the amount of specified items.
+   */
   @command('clear', { isRoot: true })
   clear = (targets?: MultiplePlayersArgument, item?: LiteralUnion<ITEMS>, maxCount?: number) => { }
 
@@ -116,8 +139,14 @@ export class CommandsRoot {
   clone = (new Clone(this)).clone
 
   // Add a comment //
-  @command('#', { isRoot: true })
-  comment = (...comments: string[]) => { }
+  /**
+   * Adds a comment, starting with a `# `, to the function.
+   */
+  @command([], { isRoot: true, registerArguments: false })
+  comment = (...comments: unknown[]) => {
+    const fullComment = comments.join(' ').split('\n').map((line) => `# ${line}`).join('\n')
+    this.commandsRoot.arguments.push(fullComment)
+  }
 
   // data command //
   data = new Data(this)
@@ -141,7 +170,19 @@ export class CommandsRoot {
   enchant = (new Enchant(this)).enchant
 
   // execute command //
-  execute: Omit<ExecuteWithRun<CommandsRoot>, 'run' | 'runOne'> = (new ExecuteWithRun(this))
+  get execute(): Omit<ExecuteWithRun<CommandsRoot>, 'run' | 'runOne'> {
+    const realExecute = new ExecuteWithRun(this)
+
+    return new Proxy(realExecute, {
+      get: (_, p: keyof ExecuteWithRun<any>) => {
+        if (this.arguments.length > 0) {
+          this.register()
+        }
+
+        return realExecute[p]
+      },
+    })
+  }
 
   // experience command //
   experience = new Experience(this)
@@ -153,29 +194,65 @@ export class CommandsRoot {
   forceload = new Forceload(this)
 
   // function command //
-  function = (new FunctionCommand(this).function)
+  functionCmd = (new FunctionCommand(this).function)
 
-  // gamemode command //
+  /**
+   * Sets a player's game mode.
+   *
+   * @param gamemode Specifies the new game mode. Must be one of the following:
+   * - `survival` for survival mode
+   * - `creative` for creative mode
+   * - `adventure` for adventure mode
+   * - `spectator` for spectator mode‌
+   *
+   * @param targets Specifies the target(s). If not specified, defaults to the player who executes the command.
+   */
   @command('gamemode', { isRoot: true })
-  gamemode = (gamemode: GAMEMODES, target: MultiplePlayersArgument) => { }
+  gamemode = (gamemode: GAMEMODES, targets?: MultiplePlayersArgument) => { }
 
   // gamerule command //
-  @command('gamerule', { isRoot: true })
-  gamerule = (gamerule: LiteralUnion<GAMERULES>, value: boolean | number) => { }
+  gamerule = (new GameruleCommand(this)).gamerule
 
-  // give command //
+  /**
+   * Gives an item to one or more players.
+   *
+   * @param targets Specifies the target(s) to give item(s) to.
+   *
+   * @param item Specifies the item to give.
+   *
+   * @param count Specifies the number of items to give. If not specified, defaults to `1`.
+   */
   @command('give', { isRoot: true })
-  give = (target: MultiplePlayersArgument, item: LiteralUnion<ITEMS>, count?: number) => { }
+  give = (targets: MultiplePlayersArgument, item: LiteralUnion<ITEMS>, count?: number) => { }
 
-  // help command //
+  /**
+   * Shows usages for one command, or lists of commands.
+   *
+   * @param command_ Specifies the command name to provide help for.
+   * Entering more specific parameters of that command is allowed.
+   *
+   * If unspecified, lists all commands.
+   *
+   * @param parameters More specific parameters of the command.
+   */
   @command('help', { isRoot: true })
-  help = (command_?: keyof typeof commands) => { }
+  help = (command_?: LiteralUnion<keyof typeof commands>, ...parameters: string[]) => { }
 
   // kill command //
+  /**
+   * Kills entities (players, mobs, items, etc.).
+   *
+   * @param targets Specifies the target(s) to kill. If not specified, defaults to the executor who executed the command.
+   */
   @command('kill', { isRoot: true })
-  kill = (targets: MultipleEntitiesArgument) => { }
+  kill = (targets?: MultipleEntitiesArgument) => { }
 
   // list command //
+  /**
+   * Shows the names of all currently-connected players.
+   *
+   * @param uuid Whether to show player UUIDs alongside names. Defaults to false.
+   */
   @command('list', {
     isRoot: true,
     parsers: {
@@ -185,10 +262,20 @@ export class CommandsRoot {
   list = (uuids?: boolean) => { }
 
   // locate command //
+  /**
+   * Displays the coordinates for the closest generated structure of a given type in the chat for the player who executed the command.
+   *
+   * @param structure Specifies the structure to locate.
+   */
   @command('locate', { isRoot: true })
   locate = (structure: LiteralUnion<STRUCTURES>) => { }
 
   // locatebiome command //
+  /**
+   * Displays the coordinates for the closest biome of a given biome ID in the chat for the player who executed the command.
+   *
+   * @param biome Specifies the biome to be located.
+   */
   @command('locatebiome', { isRoot: true })
   locatebiome = (biome: LiteralUnion<BIOMES>) => { }
 
@@ -196,27 +283,85 @@ export class CommandsRoot {
   loot = new Loot(this)
 
   // me command //
+  /**
+   * Displays a message about yourself.
+   *
+   * @param actions Specifies the messages to display. They will be joined with a whitespace.
+   *
+   * Each action can be a message or a selector.
+   * The game replaces entity selectors in the message with the list of selected entities' names,
+   * which is formatted as "name1 and name2" for two entities, or "name1, name2, ... and namen" for n entities.
+   */
   @command('me', { isRoot: true })
-  me = (action: string) => { }
+  me = (...actions: string[]) => { }
 
   // particle command //
   particle = (new Particle(this)).particle
 
   // playsound command //
+  /**
+   * Plays a specified sound at a player, in a location, and in a specific volume and pitch.
+   *
+   * @param sound Specifies the sound to play.
+   *
+   * A sound event may be affiliated with multiple sounds, and the sound that is actually produced is chosen at random from them,
+   * modified by their "weight", just as the game normally would.
+   * For example, the `entity.pig.ambient` sound event plays one of several pig sounds at random,
+   * because the event has multiple sounds associated with it.
+   *
+   * Resource packs may add their own events to `sounds.json`; the command successfully plays these.
+   * File names are not used by this command; it strictly uses the events defined in `sounds.json`
+   * (which may not even be similar to the original file names and paths),
+   * and thus a resource pack adding new sound files must define events for them
+   * (this is not necessary when replacing old sounds already defined in events).
+   *
+   * @param source Specifies the music category and options the sound falls under.
+   *
+   * @param targets Specifies the sound's target.
+   */
   @command('playsound', { isRoot: true })
   playsound = (sound: LiteralUnion<SOUND_EVENTS>, source: SOUND_SOURCES, targets: MultiplePlayersArgument, sourcePosition?: Coordinates, volume?: number, pitch?: number, minVolume?: number) => { }
 
   // recipe command //
-  recipe = new Recipe(this)
+  recipe = new RecipeCommand(this)
 
   // reload command //
+  /**
+   * Reloads the current data packs.
+   *
+   * If a data pack has invalid data (such as an invalid recipe format),
+   * changes are not applied and the game continues using the previous data.[
+   */
   @command('reload', { isRoot: true })
   reload = () => { }
+
+  /**
+   * A raw command. Can be used to create custom commands, for mods or plugins for example.
+   *
+   * @example
+   * // A custom `mount` command, that takes a player and an entity as argument
+   * const self = Selector(`@s`)
+   * const nearestSkeleton = Selector(`@e`, { limit: 1, sort: 'nearest' })
+   *
+   * raw('mount', self, nearestSkeleton)
+   */
+  @command([], { isRoot: true })
+  raw = (...args: unknown[]) => {}
 
   // replaceitem command //
   replaceitem = new ReplaceItem(this)
 
   // say command //
+  /**
+   * Sends a message in the chat.
+   *
+   * @param messages Specifies the messages to say.
+   * All messages will be joined with a whitespace.
+   *
+   * Each message must be a plain text, or a target selectors.
+   * The game replaces entity selectors in the message with the list of selected entities' names, which is formatted as "name1 and name2" for two entities,
+   * or "name1, name2, ... and namen" for n entities.
+   */
   @command('say', { isRoot: true })
   say = (...messages: MessageOrSelector[]) => { }
 
@@ -227,22 +372,60 @@ export class CommandsRoot {
   scoreboard = new Scoreboard(this)
 
   // seed command //
+  /** Displays the world seed. */
   @command('seed', { isRoot: true })
   seed = () => { }
 
   // setblock command //
+  /**
+   * Changes a block to another block.
+   *
+   * @param pos Specifies the position of the block to be changed.
+   *
+   * @param block Specifies the new block.
+   *
+   * @param type Specifies how to handle the block change. Must be one of:
+   * - `destroy`: The old block drops both itself and its contents (as if destroyed by a player). Plays the appropriate block breaking noise.
+   * - `keep`: Only air blocks are changed (non-air blocks are unchanged).
+   * - `replace`: The old block drops neither itself nor any contents. Plays no sound.
+   *
+   * If not specified, defaults to `replace`.
+   */
   @command('setblock', { isRoot: true, parsers: { '0': coordinatesParser } })
   setblock = (pos: Coordinates, block: LiteralUnion<BLOCKS>, type?: 'destroy' | 'keep' | 'replace') => { }
 
   // setidletimeout command //
+  /**
+   * Sets the time before idle players are kicked from the server.
+   *
+   * @param minutes Specifies the idle kick timer.
+   */
   @command('setidletimeout', { isRoot: true })
   setidletimeout = (minutes: number) => { }
 
   // setworldspawn command //
+  /**
+   * Sets the world spawn.
+   *
+   * @param pos Specifies the coordinates of the world spawn. If not specified, defaults to the block position of the command's execution.
+   *
+   * @param angle Specified the yaw angle to spawn with. Defaults to the direction the executor is facing.
+   */
   @command('setworldspawn', { isRoot: true, parsers: { '0': coordinatesParser, '1': rotationParser } })
   setworldspawn = (pos?: Coordinates, angle?: Rotation) => { }
 
   // spawnpoint command //
+  /**
+   * Sets the spawn point for a player. You can now set your spawnpoint in the Nether and End.
+   *
+   * @param targets Specifies the player whose spawn point should be set.
+   * If not specified, defaults to the command's executor.
+   *
+   * @param pos Specifies the coordinates of the player's new spawn point.
+   * If not specified, defaults to the position of the command's executor in Java Edition.
+   *
+   * @param angle Specifies the yaw angle to spawn with. Defaults to the direction the executor is facing.
+   */
   @command('spawnpoint', { isRoot: true, parsers: { '1': coordinatesParser, '2': rotationParser } })
   spawnpoint = (targets?: MultiplePlayersArgument, pos?: Coordinates, angle?: Rotation) => { }
 
@@ -336,7 +519,7 @@ export class CommandsRoot {
 
   worldborder = new WorldBorder(this)
 
-  /// ALIAS COMMANDS ///
+  // / ALIAS COMMANDS ///
 
   // msg command //
   msg: CommandsRoot['tell'] = (...args) => this.tell(...args)
