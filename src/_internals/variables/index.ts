@@ -1,6 +1,0 @@
-export * from './abstractClasses'
-export * from './Coordinates'
-export * from './JsonTextComponentClass'
-export * from './Objective'
-export * from './parsers'
-export * from './Selector'
